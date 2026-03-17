@@ -1,0 +1,29 @@
+{
+  "name": "kaogong-study-tracker",
+  "version": "0.1.0",
+  "description": "题爪 — 考公备考追踪 OpenClaw Skill",
+  "keywords": [
+    "openclaw",
+    "openclaw-skill",
+    "kaogong",
+    "gongkao",
+    "civil-service-exam",
+    "study-tracker",
+    "exam-prep"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "scripts": {
+    "export": "node scripts/export_xlsx.js",
+    "export:pending": "node scripts/export_xlsx.js --pending-only",
+    "summary": "node scripts/daily_summary.js",
+    "setup:ocr": "pip install paddlepaddle paddleocr",
+    "setup:ocr:cn": "pip install paddlepaddle paddleocr -i https://pypi.tuna.tsinghua.edu.cn/simple"
+  }
+}

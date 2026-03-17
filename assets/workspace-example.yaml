@@ -1,0 +1,53 @@
+# workspace-study-tracker.yaml
+# 飞书接入示例配置
+# 把这个文件放到 ~/.openclaw/workspaces/ 下即可生效
+
+name: "备考助手"
+description: "帮助追踪每日行测/申论套题进度"
+
+# 接入的聊天渠道
+# 飞书目前需要通过飞书机器人 Webhook 桥接，
+# 详见 https://docs.openclaw.ai/channels/feishu
+channels:
+  feishu:
+    enabled: true
+    webhook_url: "${FEISHU_WEBHOOK_URL}"   # 在 .env 里配置
+    # 只响应特定用户（填飞书 user_id，留空则全响应）
+    allow_from: []
+
+  # 其他渠道按需开启，逻辑完全一样
+  # telegram:
+  #   enabled: false
+  #   bot_token: "${TELEGRAM_BOT_TOKEN}"
+  # whatsapp:
+  #   enabled: false
+
+# 大模型配置
+llm:
+  provider: "anthropic"
+  model: "claude-sonnet-4-20250514"
+  api_key: "${ANTHROPIC_API_KEY}"
+  max_tokens: 1000
+  temperature: 0.5
+
+# 启用的 Skills
+skills:
+  - kaogong-study-tracker
+
+# 定时任务
+cron_jobs:
+  - name: "备考晚间总结"
+    schedule: "0 21 * * *"   # 每天 21:00
+    action:
+      type: run_script
+      script: skills/kaogong-study-tracker/scripts/daily_summary.js
+      channel: feishu           # 推送到飞书
+
+# 记忆配置（让 agent 记住用户习惯）
+memory:
+  enabled: true
+  persist_to: "~/.openclaw/skills/kaogong-study-tracker/memory.md"
+
+settings:
+  language: "zh-CN"
+  reply_max_chars: 200    # 回复字数限制，避免啰嗦

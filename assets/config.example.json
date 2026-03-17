@@ -1,0 +1,33 @@
+{
+  "_comment": "复制此文件为 config.json，按需填写。未填写的功能会自动降级。",
+
+  "multimodal": {
+    "_comment": "可选。配置后，图形推理/统计图题目会调用多模态模型理解图片内容。",
+    "enabled": false,
+    "provider": "anthropic",
+    "_provider_options": ["anthropic", "openai"],
+    "model": "claude-sonnet-4-20250514",
+    "_model_alternatives": {
+      "anthropic": "claude-opus-4-5",
+      "openai": "gpt-4o",
+      "openai_compatible": "qwen-vl-plus（需改 base_url）"
+    },
+    "api_key": "",
+    "base_url": "https://api.anthropic.com/v1/messages",
+    "_base_url_note": "OpenAI 兼容接口改为对应地址，如 https://api.openai.com/v1/chat/completions",
+    "always_use": false,
+    "_always_use_note": "true = 所有图片都走多模态；false = 只有疑似图形/图表题才用"
+  },
+
+  "feishu_doc": {
+    "_comment": "可选。配置后，可以把错题（含截图）同步到飞书云文档，直接在飞书查看。",
+    "enabled": false,
+    "app_id": "",
+    "app_secret": "",
+    "doc_token": "",
+    "_how_to_get": {
+      "app_id_secret": "飞书开放平台 open.feishu.cn → 创建企业自建应用 → 权限勾选 docs:doc",
+      "doc_token": "新建飞书文档，URL 中 /docx/ 后面的字符串，如 xxxxxxxxxxxxxx"
+    }
+  }
+}

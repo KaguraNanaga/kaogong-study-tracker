@@ -1,0 +1,7 @@
+node_modules/
+data/
+*.xlsx
+.env
+.DS_Store
+*.log
+config.json
