@@ -1,18 +1,19 @@
 /**
  * export_xlsx.js
- * 导出错题本为 .xlsx，支持将截图原图嵌入对应行。
+ * 导出错题本为 .xlsx，支持筛选和截图嵌入。
  *
- * 图片嵌入逻辑：
- *   - 错题记录中如果有 raw_image_b64 字段，把图片写成临时文件
- *   - 用 openpyxl（Python）将图片嵌入到对应行的 I 列
- *   - 纯文字题（无图片）该列留空
+ * 筛选参数：
+ *   --pending-only          只导出"待二刷"
+ *   --module=判断推理        只导出某科目
+ *   --days=30               只导出最近 N 天
+ *   --no-images             不嵌入截图
  *
- * 为什么用 Python 而不是纯 JS：
- *   xlsx (npm) 不支持图片嵌入；openpyxl（Python）原生支持，
- *   且我们已经依赖 Python 环境跑 PaddleOCR，所以不额外增加依赖。
- *
- * 触发方式：用户说"导出错题本" / "把错题发给我" / "生成报告"
- * 用法：node export_xlsx.js [--pending-only] [--with-images]
+ * 触发方式（用户说）：
+ *   "导出错题本"
+ *   "只导出待二刷的"
+ *   "导出判断推理的错题"
+ *   "导出最近两周的"
+ *   "只导出待二刷的资料分析题"
  */
 
 const fs            = require('fs');
@@ -157,12 +158,22 @@ print(out_path)
 
 // ─── 主导出函数 ──────────────────────────────────────────────
 
-async function exportXlsx({ pendingOnly = false, withImages = true } = {}) {
+async function exportXlsx({ pendingOnly = false, moduleFilter = null, daysFilter = null, withImages = true } = {}) {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
   const questions    = loadWrongQuestions();
   const dailyRecords = loadDailyRecords();
-  const filtered     = pendingOnly ? questions.filter(q => q.status !== '已掌握') : questions;
+  // 组合筛选：状态 + 科目 + 时间
+  const cutoffDate = daysFilter
+    ? new Date(Date.now() - daysFilter * 86400000).toISOString().slice(0, 10)
+    : null;
+
+  const filtered = questions.filter(q => {
+    if (pendingOnly  && q.status === '已掌握')              return false;
+    if (moduleFilter && q.module !== moduleFilter)          return false;
+    if (cutoffDate   && (q.date ?? '') < cutoffDate)        return false;
+    return true;
+  });
 
   // ── 错题行数据 ───────────────────────────────────────────────
   const wrongRows = filtered.map(q => [
@@ -217,7 +228,11 @@ async function exportXlsx({ pendingOnly = false, withImages = true } = {}) {
 
   // ── 生成并运行 Python 脚本 ─────────────────────────────────────
   const today    = new Date().toISOString().slice(0, 10);
-  const suffix   = pendingOnly ? '_待二刷' : '';
+  const parts    = [];
+  if (pendingOnly)  parts.push('待二刷');
+  if (moduleFilter) parts.push(moduleFilter);
+  if (daysFilter)   parts.push(`近${daysFilter}天`);
+  const suffix   = parts.length ? '_' + parts.join('_') : '';
   const outPath  = path.join(OUT_DIR, `备考记录_${today}${suffix}.xlsx`);
 
   const pyScript = buildPythonScript({ wrongRows, dailyRows, outPath, imageMap, pendingOnly });
@@ -243,9 +258,13 @@ async function exportXlsx({ pendingOnly = false, withImages = true } = {}) {
 // ─── CLI 入口 ─────────────────────────────────────────────────
 
 if (require.main === module) {
-  const pendingOnly = process.argv.includes('--pending-only');
-  const withImages  = !process.argv.includes('--no-images');
-  exportXlsx({ pendingOnly, withImages }).catch(e => {
+  const pendingOnly  = process.argv.includes('--pending-only');
+  const withImages   = !process.argv.includes('--no-images');
+  const moduleArg    = process.argv.find(a => a.startsWith('--module='));
+  const daysArg      = process.argv.find(a => a.startsWith('--days='));
+  const moduleFilter = moduleArg ? moduleArg.split('=')[1] : null;
+  const daysFilter   = daysArg   ? parseInt(daysArg.split('=')[1]) : null;
+  exportXlsx({ pendingOnly, moduleFilter, daysFilter, withImages }).catch(e => {
     console.error('[export] 失败:', e);
     process.exit(1);
   });
