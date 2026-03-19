@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/crane_zhupi.png">
-    <img src="docs/assets/crane_zhupi.png" alt="朱批录" width="160">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KaguraNanaga/kaogong-study-tracker/main/assets/crane_zhupi.png">
+    <img src="https://raw.githubusercontent.com/KaguraNanaga/kaogong-study-tracker/main/assets/crane_zhupi.png" alt="朱批录" width="160">
   </picture>
 </p>
 
