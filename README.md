@@ -1,11 +1,31 @@
-# 朱批录 · kaogong-study-tracker
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/crane_zhupi.png">
+    <img src="docs/assets/crane_zhupi.png" alt="朱批录" width="160">
+  </picture>
+</p>
 
-> 一个运行在你电脑上的考公备考助手，基于 [OpenClaw](https://openclaw.ai) Skill 框架构建。
-> 把每天的套题截图或成绩发给它，它帮你归档错题、分析弱点、定时提醒——所有数据留在本地，不上传任何云端。
+<h1 align="center">朱批录 · kaogong-study-tracker</h1>
 
-[![OpenClaw Skill](https://img.shields.io/badge/OpenClaw-Skill-orange)](https://openclaw.ai)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node ≥18](https://img.shields.io/badge/node-%3E%3D18-green)](https://nodejs.org)
+<p align="center">
+  考公备考追踪 OpenClaw Skill<br>
+  把每天的套题截图或成绩发给它，它帮你归档错题、分析弱点、定时提醒——所有数据留在本地，不上传任何云端。
+</p>
+
+<p align="center">
+  <a href="https://openclaw.ai">
+    <img src="https://img.shields.io/badge/OpenClaw-Skill-orange?style=for-the-badge" alt="OpenClaw Skill">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License">
+  </a>
+  <a href="https://nodejs.org">
+    <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=for-the-badge" alt="Node ≥18">
+  </a>
+  <a href="https://github.com/KaguraNanaga/shiyi">
+    <img src="https://img.shields.io/badge/通用版-拾遗-8B4513?style=for-the-badge" alt="拾遗通用版">
+  </a>
+</p>
 
 ---
 
