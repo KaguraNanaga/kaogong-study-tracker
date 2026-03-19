@@ -1,14 +1,9 @@
 /**
  * onboarding.js
- * 首次安装引导——问一次模型名，存起来，完事。
+ * 首次安装引导：只问两件事——模型名 + API Key。
  *
- * 流程：
- *   1. Skill 加载时检测 config.setup_done
- *   2. 未完成 → 发一条消息问模型名
- *   3. 用户输入模型名 → 不确定时联网搜索确认
- *   4. 存 { setup_done: true, model: "xxx" }，附带说明失败时可手动输入文字
- *
- * config.json 只有两个字段：setup_done + model，不记录其他任何东西。
+ * config.json 最终结构：
+ *   { setup_done: true, model: "qwen3-vl", api_key: "sk-xxx" }
  */
 
 const fs   = require('fs');
@@ -19,8 +14,6 @@ const CONFIG_PATH = path.join(
   os.homedir(),
   '.openclaw/skills/kaogong-study-tracker/config.json'
 );
-
-// ─── 配置读写 ─────────────────────────────────────────────────
 
 function loadConfig() {
   try {
@@ -35,113 +28,118 @@ function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
 }
 
-// ─── 状态 ─────────────────────────────────────────────────────
+function isSetupDone() { return !!loadConfig().setup_done; }
+function getStoredModel() { return loadConfig().model || null; }
 
-// onboarding 期间只需要一个中间状态：等待用户输入模型名
-// 用户输入后直接存储，不需要更多状态机
+// ─── 搜索验证 ─────────────────────────────────────────────────
 
-function isSetupDone() {
-  return !!loadConfig().setup_done;
-}
-
-function getStoredModel() {
-  return loadConfig().model || null;
-}
-
-// ─── 联网搜索验证（可选，用户说"不确定"时触发） ───────────────
-
-/**
- * 搜索模型是否支持多模态，返回简短结论给用户。
- * 只在用户主动表示不确定时调用，不强制验证。
- */
 async function searchModelInfo(modelName, webSearch) {
   try {
     const results = await webSearch(`"${modelName}" 多模态 图片识别 vision`);
     const text    = JSON.stringify(results).toLowerCase();
-    const hit     = ['vision', '图片', 'multimodal', '多模态', 'image input', '-vl', '视觉', '识图']
+    return ['vision', '图片', 'multimodal', '多模态', 'image input', '-vl', '视觉', '识图']
       .some(k => text.includes(k));
-    return hit
-      ? `搜到了，「${modelName}」支持图片识别。`
-      : `没找到明确信息，但你可以直接告诉我它支持看图，我就按这个用。`;
   } catch (_) {
-    return `搜索暂时失败，你直接确认一下它支持看图就行。`;
+    return null;
   }
 }
 
 // ─── 消息模板 ─────────────────────────────────────────────────
 
-const MSG_WELCOME = `题爪已安装。
+const MSG = {
+  WELCOME: `题爪已安装。
 
-发截图前先告诉我你用什么多模态模型？直接输入名字就行，比如 qwen3-vl、kimi-k2.5、claude-sonnet-4-6……
+发截图识别错题需要一个支持图片输入的多模态模型，先做个简单配置。
 
-不确定也没关系，把模型名发过来，我帮你查一下。`;
+第一步：你用什么模型？发名字过来，比如：
+  qwen3-vl、kimi-k2.5、glm-4v、claude-sonnet-4-6……
 
-const MSG_DONE = (model) =>
-`好，记住了，用「${model}」识别截图。
+不确定的话发模型名，我帮你查。`,
 
-之后直接发错题截图就行。如果哪次识别失败，把题目文字复制过来发给我，一样能整理。`;
+  SEARCHING: (m) => `搜一下「${m}」是否支持图片识别……`,
 
-const MSG_CONFIRM_UNKNOWN = (model, searchResult) =>
-`${searchResult}
+  ASK_API_KEY: (m) => `「${m}」支持图片识别。
 
-你确认「${model}」支持看图吗？确认的话直接回复"确认"，我就用它了。`;
+第二步：把这个模型的 API Key 发给我（只存在本地 config.json）：`,
+
+  DONE: (m) => `配置完成，用「${m}」识别截图。
+
+直接发错题截图就行。`,
+
+  NOT_MULTIMODAL: (m) => `「${m}」好像不支持图片识别。
+
+换一个支持的模型，比如：
+  qwen3-vl（阿里通义）、kimi-k2.5（Moonshot）、glm-4v（智谱）
+  claude-sonnet-4-6、gpt-5.2（需代理）
+
+把新的模型名发过来：`,
+
+  SEARCH_UNCERTAIN: (m) => `没搜到「${m}」的明确信息。
+
+它支持图片输入吗？
+  回复"支持" → 继续配置
+  回复其他模型名 → 换一个`,
+};
 
 // ─── 主处理函数 ───────────────────────────────────────────────
 
-/**
- * 处理 onboarding 期间的用户消息。
- * @returns {boolean} true = 消息已被 onboarding 消费，不继续正常流程
- */
 async function handleOnboarding(userMessage, webSearch, sendMessage) {
   if (isSetupDone()) return false;
 
   const text = (userMessage || '').trim();
   const cfg  = loadConfig();
+  const step = cfg._step || 'wait_model';
 
-  // 用户在等待确认状态下回复"确认"
-  if (cfg._pending_model && (text.includes('确认') || text === '是' || text === 'yes')) {
-    saveConfig({ setup_done: true, model: cfg._pending_model });
-    await sendMessage(MSG_DONE(cfg._pending_model));
-    return true;
-  }
-
-  // 用户输入了模型名（任意非空文字都视为模型名）
-  if (text) {
-    const uncertain = /不知道|不确定|忘了|帮我查|查一下/.test(text);
-
-    if (uncertain) {
-      // 用户说不确定，但没给模型名——再问一次
-      await sendMessage('你常用的模型叫什么名字？发过来我帮你搜一下。');
+  if (step === 'wait_model') {
+    if (!text) {
+      await sendMessage(MSG.WELCOME);
+      saveConfig({ _step: 'wait_model' });
       return true;
     }
 
-    // 有模型名，先存为 pending，搜一下
-    const modelName    = text;
-    const searchResult = await searchModelInfo(modelName, webSearch);
-    const confirmed    = searchResult.includes('支持图片识别');
+    if (text === '支持' && cfg._pending_model) {
+      saveConfig({ ...cfg, _step: 'wait_api_key' });
+      await sendMessage(MSG.ASK_API_KEY(cfg._pending_model));
+      return true;
+    }
 
-    if (confirmed) {
-      saveConfig({ setup_done: true, model: modelName });
-      await sendMessage(MSG_DONE(modelName));
+    const modelName = text;
+    await sendMessage(MSG.SEARCHING(modelName));
+    const result = await searchModelInfo(modelName, webSearch);
+
+    if (result === true) {
+      saveConfig({ _step: 'wait_api_key', _pending_model: modelName });
+      await sendMessage(MSG.ASK_API_KEY(modelName));
+    } else if (result === false) {
+      await sendMessage(MSG.NOT_MULTIMODAL(modelName));
     } else {
-      // 没搜到明确结论，让用户确认一下
-      saveConfig({ setup_done: false, _pending_model: modelName });
-      await sendMessage(MSG_CONFIRM_UNKNOWN(modelName, searchResult));
+      saveConfig({ _step: 'wait_model', _pending_model: modelName });
+      await sendMessage(MSG.SEARCH_UNCERTAIN(modelName));
     }
     return true;
   }
 
-  // 没有文字内容（第一次加载），发欢迎消息
-  await sendMessage(MSG_WELCOME);
-  return true;
+  if (step === 'wait_api_key') {
+    if (!text) {
+      await sendMessage(MSG.ASK_API_KEY(cfg._pending_model || ''));
+      return true;
+    }
+    saveConfig({
+      setup_done: true,
+      model:      cfg._pending_model || '',
+      api_key:    text,
+    });
+    await sendMessage(MSG.DONE(cfg._pending_model));
+    return true;
+  }
+
+  return false;
 }
 
-/**
- * Skill 加载时调用。未完成引导则发欢迎消息。
- */
 async function initOnboarding(sendMessage) {
   if (isSetupDone()) return;
-  await sendMessage(MSG_WELCOME);
+  await sendMessage(MSG.WELCOME);
+  saveConfig({ _step: 'wait_model' });
 }
 
 module.exports = { initOnboarding, handleOnboarding, isSetupDone, getStoredModel };

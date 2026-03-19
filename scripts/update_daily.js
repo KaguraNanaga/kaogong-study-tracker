@@ -14,6 +14,31 @@ const DATA_DIR = path.join(
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
+/**
+ * 备份 wrong_questions.json，保留最近10个备份，自动轮转旧备份。
+ */
+function backupWrongQuestions(wqPath) {
+  if (!fs.existsSync(wqPath)) return;
+
+  const backupDir = path.join(path.dirname(wqPath), 'backups');
+  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+
+  const ts     = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dest   = path.join(backupDir, `wrong_questions.${ts}.json`);
+  fs.copyFileSync(wqPath, dest);
+
+  // 保留最近 10 个，删除更早的
+  const backups = fs.readdirSync(backupDir)
+    .filter(f => f.startsWith('wrong_questions.') && f.endsWith('.json'))
+    .sort()
+    .reverse();
+
+  backups.slice(10).forEach(f => {
+    try { fs.unlinkSync(path.join(backupDir, f)); } catch (_) {}
+  });
+}
+
+
 
 /**
  * 写入每日记录
@@ -145,4 +170,46 @@ function readStatsCache() {
   return JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
 }
 
-module.exports = { updateDailyRecord, readStatsCache };
+
+/**
+ * 追加一条错题到 wrong_questions.json，写入前自动备份。
+ * @param {object} question  错题对象（来自 parse_input.js 的识别结果）
+ * @returns {object[]} 更新后的错题列表
+ */
+function saveWrongQuestion(question) {
+  const wqPath = path.join(DATA_DIR, 'wrong_questions.json');
+  ensureDir(DATA_DIR);
+
+  // 备份（每次写入前）
+  backupWrongQuestions(wqPath);
+
+  let questions = [];
+  if (fs.existsSync(wqPath)) {
+    try { questions = JSON.parse(fs.readFileSync(wqPath, 'utf-8')); }
+    catch (_) { questions = []; }
+  }
+
+  // 生成唯一 id
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  questions.push({ id, ...question });
+
+  fs.writeFileSync(wqPath, JSON.stringify(questions, null, 2), 'utf-8');
+  console.log(`[kaogong-tracker] 错题已保存，当前共 ${questions.length} 条`);
+  return questions;
+}
+
+/**
+ * 更新某条错题的状态（待二刷 ↔ 已掌握）。
+ */
+function updateWrongQuestionStatus(id, status) {
+  const wqPath = path.join(DATA_DIR, 'wrong_questions.json');
+  if (!fs.existsSync(wqPath)) return;
+
+  backupWrongQuestions(wqPath);
+  const questions = JSON.parse(fs.readFileSync(wqPath, 'utf-8'));
+  const q = questions.find(q => q.id === id);
+  if (q) q.status = status;
+  fs.writeFileSync(wqPath, JSON.stringify(questions, null, 2), 'utf-8');
+}
+
+module.exports = { updateDailyRecord, readStatsCache, saveWrongQuestion, updateWrongQuestionStatus };

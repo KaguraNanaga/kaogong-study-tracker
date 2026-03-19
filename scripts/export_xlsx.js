@@ -85,7 +85,7 @@ sheet_name  = ${JSON.stringify(sheetName)}
 HEADER_BG  = "2D5FA1"
 HEADER_FG  = "FFFFFF"
 ROW_HEIGHT = 22
-IMG_ROW_H  = 120   # 含图片行更高
+IMG_ROW_H  = 160   # 含图片行更高
 
 wb = Workbook()
 
@@ -108,7 +108,7 @@ ws.freeze_panes = "A2"
 for ri, row in enumerate(wrong_rows, 2):
     for ci, val in enumerate(row, 1):
         cell = ws.cell(row=ri, column=ci, value=val)
-        cell.alignment = Alignment(vertical="top", wrap_text=(ci in [5, 6, 8]))
+        cell.alignment = Alignment(vertical="center", wrap_text=(ci in [5, 6, 8]))
         cell.font = Font(name="Arial", size=9)
 
     # 嵌入截图（如果有）

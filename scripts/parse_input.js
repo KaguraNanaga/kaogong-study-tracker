@@ -101,43 +101,22 @@ const MULTIMODAL_PROMPT = `
 如果图片模糊无法识别，返回：{"error": "图片无法识别"}
 `.trim();
 
-function inferProvider(modelName) {
-  if (/claude/.test(modelName))                           return 'anthropic';
-  if (/gpt|o1|o3|o4/.test(modelName))                    return 'openai';
-  if (/gemini/.test(modelName))                           return 'google';
-  if (/qwen|tongyi/.test(modelName))                      return 'dashscope';
-  if (/kimi|moonshot/.test(modelName))                    return 'moonshot';
-  if (/glm|chatglm/.test(modelName))                      return 'zhipu';
-  if (/minimax/.test(modelName))                          return 'minimax';
-  if (/deepseek/.test(modelName))                         return 'deepseek';
-  return 'openai';  // 默认走 OpenAI 兼容接口
-}
-
-function inferBaseUrl(provider) {
-  const urls = {
-    'anthropic':  'https://api.anthropic.com/v1/messages',
-    'openai':     'https://api.openai.com/v1/chat/completions',
-    'google':     'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-    'dashscope':  'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-    'moonshot':   'https://api.moonshot.cn/v1/chat/completions',
-    'zhipu':      'https://open.bigmodel.cn/api/paas/v4/chat/completions',
-    'minimax':    'https://api.minimax.chat/v1/text/chatcompletion_v2',
-    'deepseek':   'https://api.deepseek.com/v1/chat/completions',
-  };
-  return urls[provider] || 'https://api.openai.com/v1/chat/completions';
+/**
+ * 根据模型名推断 provider，决定用 Anthropic 原生格式还是 OpenAI 兼容格式。
+ * API Key 和 base_url 由用户在 onboarding 时提供，存在 config.json。
+ */
+function isAnthropicModel(modelName) {
+  return /claude/.test((modelName || '').toLowerCase());
 }
 
 async function runMultimodalModel(imageBase64, caption, config) {
-  const modelName = (config.multimodal?.model || '').toLowerCase();
-
-  // API key 从 OpenClaw 运行环境取，key 名根据模型推断
-  // 用户只需在 OpenClaw 的 workspace 里配好对应的 auth-profile 即可
-  const provider = inferProvider(modelName);
-  const model    = config.multimodal?.model || 'claude-sonnet-4-6';
-  const apiKey   = process.env[`${provider.toUpperCase().replace(/-/g,'_')}_API_KEY`]
-                   || process.env.MULTIMODAL_API_KEY
-                   || '';
-  const baseUrl  = inferBaseUrl(provider);
+  const model   = config.model || '';
+  const apiKey  = config.api_key || '';
+  const baseUrl = config.base_url || (
+    isAnthropicModel(model)
+      ? 'https://api.anthropic.com/v1/messages'
+      : 'https://api.openai.com/v1/chat/completions'
+  );
 
   const promptWithCaption = caption
     ? `${MULTIMODAL_PROMPT}\n\n用户附带说明：「${caption}」`
@@ -182,7 +161,7 @@ async function runMultimodalModel(imageBase64, caption, config) {
       body: JSON.stringify(body),
     });
     const data    = await response.json();
-    const rawText = provider === 'anthropic'
+    const rawText = isAnthropicModel(model)
       ? data.content?.[0]?.text
       : data.choices?.[0]?.message?.content;
 
@@ -266,9 +245,9 @@ function extractKeywords(text, module) {
 // ─────────────────────────────────────────────
 
 async function parseImageInput(imageBase64, caption = '') {
-  const model = getStoredModel();
+  const cfg = loadConfig();
 
-  const engineResult = await runMultimodalModel(imageBase64, caption, { multimodal: { model } });
+  const engineResult = await runMultimodalModel(imageBase64, caption, cfg);
   if (!engineResult.success) {
     return {
       success:         false,
@@ -281,8 +260,97 @@ async function parseImageInput(imageBase64, caption = '') {
     ...engineResult,
     date:          new Date().toISOString().slice(0, 10),
     source:        'image',
-    raw_image_b64: imageBase64,   // 保留原图，供 xlsx 嵌入使用（见 export_xlsx.js）
+    raw_image_b64: await compressImageAsync(imageBase64),  // 压缩到 800px 宽再存
     needs_confirm: buildConfirmPrompt(engineResult.module, engineResult.error_reason, caption),
+  };
+}
+
+
+// ─────────────────────────────────────────────
+// 图片压缩（存储前缩至 800px 宽，减少 JSON 体积）
+// ─────────────────────────────────────────────
+
+/**
+ * 用 Canvas API（Node 18+ 没有，走 sharp 或直接限制尺寸）。
+ * OpenClaw 运行在 Node 环境，这里用 sharp 如果可用，否则原样返回。
+ * 安装：npm install sharp（可选，未安装时跳过压缩）
+ */
+function compressImage(base64) {
+  try {
+    const sharp = require('sharp');  // 可选依赖，未安装时 catch
+    const buf   = Buffer.from(base64, 'base64');
+    // sharp 是异步的，这里同步包装（仅在图片很大时才值得）
+    // 实际使用时建议改为 async 版本
+    return base64;  // 占位，下方 compressImageAsync 是真正的异步版本
+  } catch (_) {
+    return base64;  // sharp 未安装，原样返回
+  }
+}
+
+/**
+ * 异步版本（推荐在 parseImageInput 中使用）。
+ * 将图片压缩到宽度 ≤800px，质量 80，减少存储体积约 60-80%。
+ */
+async function compressImageAsync(base64) {
+  try {
+    const sharp  = require('sharp');
+    const buf    = Buffer.from(base64, 'base64');
+    const out    = await sharp(buf)
+      .resize({ width: 800, withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    return out.toString('base64');
+  } catch (_) {
+    return base64;  // sharp 未安装或压缩失败，原样返回
+  }
+}
+
+// ─────────────────────────────────────────────
+// 快捷录入模式
+// ─────────────────────────────────────────────
+
+/**
+ * 识别快捷格式：「科目-题型-原因-状态」
+ * 例：资料-乘积增长-公式不熟-待二刷
+ *     判断-逻辑判断-粗心
+ *     言语-主旨-没时间
+ *
+ * @returns {object|null} 解析结果，null 表示不是快捷格式
+ */
+function parseQuickEntry(text) {
+  // 快捷格式：至少两段用 - 或 — 分隔，第一段是科目关键词
+  const parts = text.split(/[-—·\/]/);
+  if (parts.length < 2) return null;
+
+  const module = normalizeModule(parts[0].trim());
+  if (!module) return null;
+
+  // 第二段：题型（可选）
+  const subtype = parts[1]?.trim() || '';
+
+  // 第三段：原因（可选，做关键词匹配）
+  const reasonRaw  = parts[2]?.trim() || '';
+  const error_reason = inferErrorReason(reasonRaw) !== '未说明'
+    ? inferErrorReason(reasonRaw)
+    : (reasonRaw || '未说明');
+
+  // 第四段：状态（可选）
+  const statusRaw = parts[3]?.trim() || '';
+  const status    = /掌握|搞懂|会了/.test(statusRaw) ? '已掌握' : '待二刷';
+
+  // 自动提取知识点标签
+  const keywords = extractKeywords(`${subtype} ${reasonRaw}`, module);
+
+  return {
+    source:        'quick',
+    date:          new Date().toISOString().slice(0, 10),
+    module,
+    subtype:       subtype || guessSubtype(reasonRaw),
+    question_text: text,   // 保留原始快捷文字
+    error_reason,
+    keywords,
+    status,
+    needs_confirm: null,   // 快捷模式不追问
   };
 }
 
@@ -291,6 +359,10 @@ async function parseImageInput(imageBase64, caption = '') {
 // ─────────────────────────────────────────────
 
 function parseStudyInput(message) {
+  // 优先尝试快捷录入格式：资料-乘积增长-公式不熟-待二刷
+  const quick = parseQuickEntry(message);
+  if (quick) return quick;
+
   const result = {
     date:                new Date().toISOString().slice(0, 10),
     source:              'text',
