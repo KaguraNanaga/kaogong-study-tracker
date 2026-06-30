@@ -25,9 +25,9 @@
 
 const fs   = require('fs');
 const path = require('path');
-const os   = require('os');
+const { getConfigPath, getDataDir } = require('./paths');
 
-const DATA_DIR = path.join(os.homedir(), '.openclaw/skills/kaogong-study-tracker/data');
+const DATA_DIR = getDataDir();
 const WQ_PATH  = path.join(DATA_DIR, 'wrong_questions.json');
 
 // ─── 飞书 API 基础 ────────────────────────────────────────────
@@ -187,7 +187,7 @@ async function appendBlocksToDoc(docToken, blocks, token) {
  * @param {{ recentOnly?: boolean, limit?: number }} options
  */
 async function syncToFeishuDoc({ recentOnly = true, limit = 10 } = {}) {
-  const configPath = path.join(__dirname, '../config.json');
+  const configPath = getConfigPath();
   if (!fs.existsSync(configPath)) {
     throw new Error('未找到 config.json，请先配置飞书参数（见 assets/config.example.json）');
   }

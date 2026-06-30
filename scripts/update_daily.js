@@ -5,11 +5,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { getDataDir } = require('./paths');
 
-const DATA_DIR = path.join(
-  process.env.HOME || process.env.USERPROFILE,
-  '.openclaw/skills/kaogong-study-tracker/data'
-);
+const DATA_DIR = getDataDir();
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

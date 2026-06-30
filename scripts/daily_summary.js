@@ -1,9 +1,9 @@
 /**
  * daily_summary.js
- * 定时任务脚本（每天 21:00 由 OpenClaw cron 触发）。
+ * 定时任务脚本（每天 21:00 由你使用的 agent / cron 触发）。
  * 汇总当日数据，主动推送总结消息。
  * 
- * workspace.yaml 配置示例：
+ * workspace.yaml / cron 配置示例：
  *   cron_jobs:
  *     - name: "备考晚间总结"
  *       schedule: "0 21 * * *"
@@ -14,11 +14,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { getDataDir } = require('./paths');
 
-const DATA_DIR = path.join(
-  process.env.HOME || process.env.USERPROFILE,
-  '.openclaw/skills/kaogong-study-tracker/data'
-);
+const DATA_DIR = getDataDir();
 
 function buildSummaryMessage() {
   const today = new Date().toISOString().slice(0, 10);
@@ -87,7 +85,7 @@ function buildSuggestion([modName, modData], weakModules) {
   return SUGGESTIONS[modName] || `明天重点看一下【${modName}】，把错题过一遍。`;
 }
 
-// 直接运行时，打印消息（OpenClaw 会捕获 stdout 作为推送内容）
+// 直接运行时，打印消息（宿主 agent / cron 可以捕获 stdout 作为推送内容）
 const msg = buildSummaryMessage();
 console.log(msg);
 

@@ -5,3 +5,5 @@ data/
 .DS_Store
 *.log
 config.json
+__pycache__/
+*.pyc

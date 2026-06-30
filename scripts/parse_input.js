@@ -2,7 +2,7 @@
  * parse_input.js
  * 将用户发来的消息（文字 或 图片）解析为结构化的备考数据。
  *
- * 图片识别：统一走多模态模型（在 config.json 中配置）。
+ * 图片识别：统一走宿主 agent 提供的多模态模型。
  *   支持图形推理、统计图表等 OCR 无法理解的题型。
  *   未配置时发送 onboarding 提示，引导用户填写 API Key。
  *
@@ -150,7 +150,7 @@ function extractKeywords(text, module) {
 // ─────────────────────────────────────────────
 
 async function parseImageInput(imageBase64, caption, agentCall) {
-  // agentCall 是 OpenClaw 注入的模型调用函数（使用 workspace 里配置的模型）
+  // agentCall 是宿主 agent 注入的模型调用函数（需支持图片输入）
   // 如果没有注入（模型不支持图片），直接返回降级提示
   if (typeof agentCall !== 'function') {
     return {
@@ -170,7 +170,7 @@ async function parseImageInput(imageBase64, caption, agentCall) {
     if (parsed.error) throw new Error(parsed.error);
     engineResult = {
       success:            true,
-      source_engine:      'openclaw-agent',
+      source_engine:      'agent-vision',
       module:             normalizeModule(parsed.module) ?? parsed.module,
       subtype:            parsed.subtype             ?? '未识别',
       question_text:      parsed.question_text       ?? '',
@@ -204,7 +204,7 @@ async function parseImageInput(imageBase64, caption, agentCall) {
 
 /**
  * 用 Canvas API（Node 18+ 没有，走 sharp 或直接限制尺寸）。
- * OpenClaw 运行在 Node 环境，这里用 sharp 如果可用，否则原样返回。
+ * 运行在 Node 环境时，这里用 sharp 如果可用，否则原样返回。
  * 安装：npm install sharp（可选，未安装时跳过压缩）
  */
 function compressImage(base64) {
@@ -370,7 +370,7 @@ function parseStudyInput(message) {
 }
 
 // ─────────────────────────────────────────────
-// OpenClaw 统一入口
+// 通用 agent 入口
 // ─────────────────────────────────────────────
 
 async function handleMessage(message, { agentCall, sendMessage } = {}) {

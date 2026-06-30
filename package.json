@@ -1,10 +1,10 @@
 {
   "name": "kaogong-study-tracker",
   "version": "0.1.0",
-  "description": "朱批录 — 考公备考追踪 OpenClaw Skill",
+  "description": "朱批录 — 通用 Agent 考公备考追踪 Skill",
   "keywords": [
-    "openclaw",
-    "openclaw-skill",
+    "agent-skill",
+    "ai-agent",
     "kaogong",
     "gongkao",
     "civil-service-exam",
@@ -15,9 +15,6 @@
   "license": "MIT",
   "engines": {
     "node": ">=18"
-  },
-  "dependencies": {
-    "xlsx": "^0.18.5"
   },
   "scripts": {
     "export": "node scripts/export_xlsx.js",

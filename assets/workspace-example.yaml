@@ -1,13 +1,14 @@
 # workspace-study-tracker.yaml
-# 飞书接入示例配置
-# 把这个文件放到 ~/.openclaw/workspaces/ 下即可生效
+# OpenClaw 飞书接入示例配置
+# 朱批录本身是通用 agent skill；这个文件只用于 OpenClaw 兼容接入。
+# OpenClaw 用户可以把这个文件放到 ~/.openclaw/workspaces/ 下启用。
 
 name: "备考助手"
 description: "帮助追踪每日行测/申论套题进度"
 
 # 接入的聊天渠道
 # 飞书目前需要通过飞书机器人 Webhook 桥接，
-# 详见 https://docs.openclaw.ai/channels/feishu
+# OpenClaw 飞书桥接详见 https://docs.openclaw.ai/channels/feishu
 channels:
   feishu:
     enabled: true
@@ -46,7 +47,7 @@ cron_jobs:
 # 记忆配置（让 agent 记住用户习惯）
 memory:
   enabled: true
-  persist_to: "~/.openclaw/skills/kaogong-study-tracker/memory.md"
+  persist_to: "~/.kaogong-study-tracker/memory.md"
 
 settings:
   language: "zh-CN"

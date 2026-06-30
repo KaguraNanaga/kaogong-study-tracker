@@ -20,8 +20,9 @@ const fs            = require('fs');
 const path          = require('path');
 const os            = require('os');
 const { execFile }  = require('child_process');
+const { getDataDir } = require('./paths');
 
-const DATA_DIR  = path.join(os.homedir(), '.openclaw/skills/kaogong-study-tracker/data');
+const DATA_DIR  = getDataDir();
 const OUT_DIR   = path.join(DATA_DIR, 'exports');
 const WQ_PATH   = path.join(DATA_DIR, 'wrong_questions.json');
 const DAILY_DIR = path.join(DATA_DIR, 'daily');
@@ -113,6 +114,8 @@ for ri, row in enumerate(wrong_rows, 2):
         cell.font = Font(name="Arial", size=9)
 
     # 嵌入截图（如果有）
+    has_visual = bool(row[5] if len(row) > 5 else None)
+    has_image = False
     img_path = image_map.get(str(ri - 2))   # ri-2 对应 wrong_rows 的索引
     if img_path and os.path.exists(img_path):
         try:
@@ -124,11 +127,11 @@ for ri, row in enumerate(wrong_rows, 2):
             col_letter = get_column_letter(len(headers))   # 最后一列
             ws.add_image(img, f"{col_letter}{ri}")
             ws.row_dimensions[ri].height = max(IMG_ROW_H, img.height * 0.75 + 10)
+            has_image = True
         except Exception as e:
             ws.cell(row=ri, column=len(headers), value=f"[图片加载失败: {e}]")
-    else:
-        has_visual = bool(row[5] if len(row) > 5 else None)
-    ws.row_dimensions[ri].height = 60 if has_visual else ROW_HEIGHT
+    if not has_image:
+        ws.row_dimensions[ri].height = 60 if has_visual else ROW_HEIGHT
 
 # ── Sheet 2: 每日记录 ─────────────────────────────
 ws2 = wb.create_sheet("每日记录")

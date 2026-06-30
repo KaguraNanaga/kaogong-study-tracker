@@ -12,14 +12,14 @@ description: >
 
 ## 一、首次安装提示
 
-Skill 首次加载时（`~/.openclaw/skills/kaogong-study-tracker/.welcomed` 不存在），
+Skill 首次加载时（默认 `~/.kaogong-study-tracker/.welcomed` 不存在；可用 `KAOGONG_WELCOME_FLAG` 覆盖），
 主动发一条说明消息，之后不再重复：
 
 ```
 朱批录已安装。
 
 直接发文字就能记录，比如"今天判断推理错了8道"。
-发截图的话，需要 OpenClaw 配置了支持图片输入的多模态模型才能自动识别。
+发截图的话，需要当前 agent 配置了支持图片输入的多模态模型才能自动识别。
 没有的话也没关系，把题目文字手动复制过来发给我，一样能整理。
 ```
 
@@ -29,7 +29,7 @@ Skill 首次加载时（`~/.openclaw/skills/kaogong-study-tracker/.welcomed` 不
 
 ## 二、概览
 
-**平台无关**——飞书、Telegram、WhatsApp、Discord，逻辑完全一致。
+**平台无关**——Trae、Cursor、opencode、Hermes、OpenClaw 或其他 agent 都可以接；飞书、Telegram、WhatsApp、Discord 等渠道由宿主 agent 负责。
 
 图片识别统一走多模态模型：文字题、图形推理、统计图表都能理解，不依赖本地 OCR。
 
@@ -59,7 +59,7 @@ Skill 首次加载时（`~/.openclaw/skills/kaogong-study-tracker/.welcomed` 不
 
 ## 四、数据结构
 
-所有数据以 JSON 存储在 `~/.openclaw/skills/kaogong-study-tracker/data/`。
+所有数据以 JSON 存储在本地，默认目录为 `~/.kaogong-study-tracker/data/`。如需放到指定目录，设置 `KAOGONG_DATA_DIR`。
 
 ### 4.1 每日记录 `daily/{YYYY-MM-DD}.json`
 
@@ -129,9 +129,9 @@ Skill 首次加载时（`~/.openclaw/skills/kaogong-study-tracker/.welcomed` 不
 ```
 
 **图片处理流程：**
-1. 读取 `config.json` 中的 `multimodal` 配置
-2. 如未配置 → 回复"请先配置多模态模型 API，见安装提示"
-3. 调用多模态模型，提取：科目、题型、题目内容、视觉描述、答案、错误原因推测
+1. 宿主 agent 将图片 base64 和 caption 传给 `parseImageInput(imageBase64, caption, agentCall)`
+2. 如没有可用的 `agentCall` / 图片模型 → 回复"当前 agent 还不能识别图片，可以把题目文字复制过来"
+3. 通过宿主 agent 的多模态模型提取：科目、题型、题目内容、视觉描述、答案、错误原因推测
 4. `needs_confirm` 不为 null 时追问（最多一个问题）；caption 已含原因则直接归档
 
 **追问只问一次，按优先级：**

@@ -5,12 +5,9 @@
 
 const fs   = require('fs');
 const path = require('path');
-const os   = require('os');
+const { getWelcomeFlagPath } = require('./paths');
 
-const FLAG_PATH = path.join(
-  os.homedir(),
-  '.openclaw/skills/kaogong-study-tracker/.welcomed'
-);
+const FLAG_PATH = getWelcomeFlagPath();
 
 function hasWelcomed() {
   return fs.existsSync(FLAG_PATH);
@@ -26,7 +23,7 @@ const WELCOME_MSG =
 `朱批录已安装。
 
 直接发文字就能记录，比如"今天判断推理错了8道"。
-发截图的话，需要 OpenClaw 配置了支持图片输入的多模态模型才能自动识别。
+发截图的话，需要当前 agent 配置了支持图片输入的多模态模型才能自动识别。
 没有的话也没关系，把题目文字手动复制过来发给我，一样能整理。`;
 
 async function initOnboarding(sendMessage) {

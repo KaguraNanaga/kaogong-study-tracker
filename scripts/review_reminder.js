@@ -13,9 +13,9 @@
 
 const fs   = require('fs');
 const path = require('path');
-const os   = require('os');
+const { getDataDir } = require('./paths');
 
-const DATA_DIR    = path.join(os.homedir(), '.openclaw/skills/kaogong-study-tracker/data');
+const DATA_DIR    = getDataDir();
 const WQ_PATH     = path.join(DATA_DIR, 'wrong_questions.json');
 const STATE_PATH  = path.join(DATA_DIR, 'review_state.json');
 const SESSION_PATH = path.join(DATA_DIR, 'review_session.json');
