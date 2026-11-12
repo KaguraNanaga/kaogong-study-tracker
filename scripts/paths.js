@@ -6,7 +6,8 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 function expandHome(p) {
   if (!p) return p;
   if (p === '~') return os.homedir();
-  if (p.startsWith(`~${path.sep}`)) return path.join(os.homedir(), p.slice(2));
+  // Windows 上用户也常写 ~/，两种分隔符都要认
+  if (/^~[\\/]/.test(p)) return path.join(os.homedir(), p.slice(2));
   return p;
 }
 

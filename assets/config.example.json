@@ -1,33 +1,20 @@
 {
-  "_comment": "复制此文件为 config.json，按需填写。未填写的功能会自动降级。",
-
-  "multimodal": {
-    "_comment": "可选。配置后，图形推理/统计图题目会调用多模态模型理解图片内容。",
-    "enabled": false,
-    "provider": "anthropic",
-    "_provider_options": ["anthropic", "openai"],
-    "model": "claude-sonnet-4-20250514",
-    "_model_alternatives": {
-      "anthropic": "claude-opus-4-5",
-      "openai": "gpt-4o",
-      "openai_compatible": "qwen-vl-plus（需改 base_url）"
-    },
-    "api_key": "",
-    "base_url": "https://api.anthropic.com/v1/messages",
-    "_base_url_note": "OpenAI 兼容接口改为对应地址，如 https://api.openai.com/v1/chat/completions",
-    "always_use": false,
-    "_always_use_note": "true = 所有图片都走多模态；false = 只有疑似图形/图表题才用"
-  },
+  "_comment": "复制此文件为项目根目录下的 config.json，按需填写。未启用的功能不影响其他功能。图片识别使用宿主 agent 自己的多模态模型，这里不需要配置。",
 
   "feishu_doc": {
-    "_comment": "可选。配置后，可以把错题（含截图）同步到飞书云文档，直接在飞书查看。",
     "enabled": false,
     "app_id": "",
     "app_secret": "",
-    "doc_token": "",
-    "_how_to_get": {
-      "app_id_secret": "飞书开放平台 open.feishu.cn → 创建企业自建应用 → 权限勾选 docs:doc",
-      "doc_token": "新建飞书文档，URL 中 /docx/ 后面的字符串，如 xxxxxxxxxxxxxx"
-    }
+    "doc_url": "",
+    "domain": "feishu",
+    "_how_to": [
+      "1. open.feishu.cn → 创建企业自建应用，记下 App ID / App Secret",
+      "2. 权限管理里开通：docx:document、docs:document.media:upload（或 drive:drive）；用知识库链接还需要 wiki:wiki:readonly",
+      "3. 版本管理与发布 → 创建版本并发布（不发布，权限不生效）",
+      "4. 新建一篇飞书文档（链接里是 /docx/ 或 /wiki/），把链接整个粘贴到 doc_url",
+      "5. 打开这篇文档 → 右上角「…」→「添加文档应用」→ 选中你的应用，给可编辑权限",
+      "6. 运行 node scripts/feishu_doc.js --check 检查是否配置成功",
+      "国际版 Lark 用户把 domain 改成 lark"
+    ]
   }
 }

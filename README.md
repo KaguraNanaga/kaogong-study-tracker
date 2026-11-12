@@ -9,7 +9,7 @@
 
 <p align="center">
   通用 Agent 考公备考追踪 Skill<br>
-  把每天的套题截图或成绩发给你的 AI agent，它帮你归档错题、分析弱点、定时提醒——所有数据留在本地，不上传任何云端。
+  把每天的套题截图或成绩发给你的 AI agent，它帮你归档错题、分析弱点、定时提醒——记录数据保存在你自己的电脑上。
 </p>
 
 <p align="center">
@@ -78,7 +78,18 @@
 
 ### 同步到飞书云文档（可选）
 
-说"同步到飞书"，把最新错题（含截图原图）写入飞书云文档，手机上直接查看，对图形推理题尤其有用。
+说"同步到飞书"，把还没同步过的错题（含截图原图）追加到飞书云文档，手机上直接查看，对图形推理题尤其有用。已同步的题不会重复写入。
+
+配置步骤（大多数"同步失败"都是漏了第 3 或第 5 步）：
+
+1. 在 [飞书开放平台](https://open.feishu.cn) 创建企业自建应用，记下 App ID 和 App Secret
+2. 「权限管理」里开通 `docx:document` 和 `docs:document.media:upload`（或 `drive:drive`）；如果文档放在知识库里，再开通 `wiki:wiki:readonly`
+3. 「版本管理与发布」→ 创建版本并发布，权限才会生效
+4. 新建一篇飞书文档，把链接（`/docx/...` 或 `/wiki/...`）填到 `config.json` 的 `feishu_doc.doc_url`
+5. 打开这篇文档 → 右上角「…」→「添加文档应用」，把你的应用加进来并给"可编辑"
+6. 运行 `node scripts/feishu_doc.js --check`，看到"配置检查通过"就可以了
+
+国际版 Lark 用户在配置里加 `"domain": "lark"`。旧版文档（链接是 `/docs/`）飞书 API 已不支持写入，需要新建新版文档。
 
 ---
 
@@ -86,7 +97,7 @@
 
 **对话即操作**——一切通过聊天完成，不需要打开任何 App、不需要编辑配置文件。
 
-**本地优先**——错题数据（包括截图）默认存在你自己电脑的 `~/.kaogong-study-tracker/` 里，不经过任何第三方服务器。
+**本地优先**——错题数据（包括截图）默认存在你自己电脑的 `~/.kaogong-study-tracker/` 里。截图识别时图片会发给你的 agent 所使用的模型；同步飞书只在你主动要求时进行。
 
 **失败软降级**——图片识别失败时给出明确提示，引导手动输入，不中断流程。
 
@@ -110,11 +121,11 @@
 
 ## 支持的 Agent / 渠道
 
-朱批录不是绑定某个平台的 App。只要你的 agent 能读 `SKILL.md`、运行本仓库脚本、读写本地文件，并能把图片交给多模态模型，就可以接入。
+朱批录不是绑定某个平台的 App。只要你的 agent 能读 `SKILL.md`、执行命令（`node scripts/cli.js …`），就可以接入；能看图的 agent 还可以直接识别错题截图。
 
 | 使用环境 | 说明 |
 |---------|------|
-| Trae / Cursor / opencode / Hermes 等本地 agent | 可按 `SKILL.md` 触发脚本，数据放本地 |
+| Claude Code / Codex / Cursor / Trae / opencode 等本地 agent | 按 `SKILL.md` 调用 `scripts/cli.js`，数据放本地 |
 | OpenClaw | 仍可使用，`assets/workspace-example.yaml` 保留兼容示例 |
 | 飞书 / Telegram / Discord / iMessage 等聊天渠道 | 由宿主 agent 接入渠道，朱批录只负责解析、归档、导出、提醒 |
 
@@ -125,7 +136,7 @@
 ### 前置条件
 
 - Node.js ≥ 18
-- Python 3 + `openpyxl`（用于导出 Excel）
+- Python 3 + `openpyxl` + `Pillow`（用于导出 Excel；没有 Pillow 也能导出，但截图不会嵌入）
 - 一个能调用多模态模型的 agent（截图识别需要；纯文字记录不需要）
 
 ### 安装步骤
@@ -138,22 +149,35 @@ git clone https://github.com/KaguraNanaga/kaogong-study-tracker
 # 2. 安装依赖
 cd kaogong-study-tracker
 npm install
-pip install openpyxl
+python3 -m pip install openpyxl pillow     # Windows 用 py -m pip install openpyxl pillow
+
+# 可选：存图前自动压缩截图，错题本文件会小很多
+npm install sharp
 
 # 3. 让你的 agent 读取 SKILL.md，并在需要时运行 scripts/ 里的脚本
 ```
 
-如果你的 agent 支持定时任务，可以配置每天 21:00 运行：
+如果你的 agent 支持定时任务，可以配置：
 
 ```bash
-node scripts/daily_summary.js
+node scripts/cli.js summary    # 每天 21:00，晚间总结（输出 JSON，message 字段是文案）
+node scripts/cli.js review     # 每隔一天 20:00，二刷抽题
 ```
+
+导出时找不到 Python，可以设置 `KAOGONG_PYTHON` 指向 Python 可执行文件；日期默认按本机时区，服务器在海外时可以设置 `KAOGONG_TZ=Asia/Shanghai`。
 
 OpenClaw 用户可以参考 [`assets/workspace-example.yaml`](assets/workspace-example.yaml)。
 
 ### 首次使用
 
-安装后把 `SKILL.md` 交给你的 agent 读取。图片识别使用宿主 agent 已配置的多模态模型；如果没有图片能力，把题目文字复制过来一样能整理。
+安装后把 `SKILL.md` 交给你的 agent 读取。agent 会通过 `scripts/cli.js` 读写数据，你只需要正常聊天。也可以自己在终端试一下：
+
+```bash
+node scripts/cli.js log "今天判断推理错了8道"
+node scripts/cli.js stats
+```
+
+图片识别由 agent 自己完成（要求见 `references/vision_prompt.md`）；agent 不能看图的话，把题目文字复制过来一样能整理。
 
 ---
 
@@ -211,13 +235,19 @@ kaogong-study-tracker/
 ├── SKILL.md                       ← Agent 读取的主文件（含完整流程文档）
 ├── package.json
 ├── scripts/
-│   ├── onboarding.js              ← 首次安装对话引导
-│   ├── parse_input.js             ← 消息解析 + 多模态模型调用
+│   ├── cli.js                     ← 命令行入口，agent 的所有读写都走这里
+│   ├── onboarding.js              ← 首次欢迎语（JS 宿主用；命令行用 cli.js welcome）
+│   ├── parse_input.js             ← 消息解析（文字成绩、快捷格式、导出指令）
 │   ├── update_daily.js            ← 写入每日记录和统计缓存
-│   ├── export_xlsx.js             ← 导出 Excel（含截图嵌入，openpyxl）
+│   ├── export_xlsx.js             ← 导出 Excel（筛选、截图嵌入）
+│   ├── xlsx_writer.py             ← 实际写 xlsx 的 Python 脚本（openpyxl）
 │   ├── feishu_doc.js              ← 同步到飞书云文档（可选）
-│   └── daily_summary.js           ← 定时晚间总结推送
+│   ├── review_reminder.js         ← 二刷抽题 + 处理"记得/不记得"
+│   ├── daily_summary.js           ← 定时晚间总结推送
+│   ├── paths.js / util.js         ← 路径、本地日期、安全读写
+├── test/smoke.js                  ← npm test 冒烟测试
 ├── references/
+│   ├── vision_prompt.md           ← 截图识别要求和输出字段
 │   ├── reply_templates.md         ← 5种回复模板（正常/情绪低/弱点分析等）
 │   └── tone_guide.md              ← 语气规范：像朋友，不像 AI 助手
 └── assets/

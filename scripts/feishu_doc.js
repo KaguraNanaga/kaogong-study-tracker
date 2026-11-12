@@ -1,248 +1,320 @@
 /**
  * feishu_doc.js
- * 将错题本同步到飞书云文档，支持图片直接嵌入——对图形推理/统计图最有用。
+ * 把错题本同步到飞书云文档（新版文档 docx），截图以图片块嵌入。
  *
- * 可行性说明：
- *   飞书开放平台提供「云文档 API」，可以程序化创建/更新文档、插入图片块。
- *   图片先上传到飞书文件系统获取 file_token，再作为图片块插入文档。
- *   最终效果：在飞书里直接看到错题截图 + 分析文字，不需要下载 Excel。
- *
- * 前置配置（在 config.json 中填写）：
- *   {
- *     "feishu_doc": {
- *       "enabled": true,
- *       "app_id":     "cli_xxxxxx",
- *       "app_secret": "xxxxxxxx",
- *       "doc_token":  "xxxxxx"   // 飞书文档 URL 中的 token 部分
- *     }
+ * ── 配置（config.json）──────────────────────────────────────
+ *   "feishu_doc": {
+ *     "enabled":    true,
+ *     "app_id":     "cli_xxxxxx",
+ *     "app_secret": "xxxxxxxx",
+ *     "doc_url":    "https://xxx.feishu.cn/docx/XXXXXXXX",  // 直接粘贴文档链接即可（也支持 /wiki/ 链接）
+ *     "domain":     "feishu"                                 // 国际版 Lark 填 "lark"
  *   }
+ *   旧配置里的 "doc_token" 仍然兼容。
  *
- * 获取 app_id / app_secret：飞书开放平台 → 创建企业自建应用 → 权限：docs:doc
- * 获取 doc_token：新建一个飞书文档，URL 中 /wiki/ 或 /docs/ 后面的字符串就是 token
+ * ── 飞书侧必须做的三件事（大部分"同步失败"都卡在这里）──────
+ *   1. 开放平台 → 你的企业自建应用 → 权限管理，开通：
+ *        docx:document                      （编辑新版文档）
+ *        docs:document.media:upload 或 drive:drive （上传文档图片）
+ *        wiki:wiki:readonly                 （仅当用 /wiki/ 链接时需要）
+ *   2. 开通权限后「创建版本并发布」，否则权限不生效。
+ *   3. 打开目标文档 → 右上角「…」→「添加文档应用」，把这个应用加进来并给"可编辑"。
+ *      tenant_access_token 只能访问应用被授权的文档，不加这一步一定报无权限。
  *
- * 触发方式：用户说"同步到飞书" / "更新飞书错题本"
+ * ── 图片写入流程（飞书官方要求的三步）──────────────────────
+ *   ① 在文档里创建一个空的图片块，拿到它的 block_id
+ *   ② 调 drive/v1/medias/upload_all 上传图片，parent_type=docx_image，parent_node=图片块 block_id
+ *   ③ PATCH 该图片块，replace_image.token = 上传返回的 file_token
+ *   注意：im/v1/images（消息图片）返回的 image_key 不能用在文档里。
+ *
+ * ── 用法 ────────────────────────────────────────────────────
+ *   node scripts/feishu_doc.js              同步最近 10 道"还没同步过"的错题
+ *   node scripts/feishu_doc.js --limit=30   同步最近 30 道未同步错题
+ *   node scripts/feishu_doc.js --all        同步全部未同步错题
+ *   node scripts/feishu_doc.js --resync     忽略同步记录，重新追加（会产生重复）
+ *   node scripts/feishu_doc.js --check      只检查配置和权限，不写入
  */
 
 const fs   = require('fs');
 const path = require('path');
 const { getConfigPath, getDataDir } = require('./paths');
+const { readJson, writeJsonAtomic, decodeImage } = require('./util');
 
-const DATA_DIR = getDataDir();
-const WQ_PATH  = path.join(DATA_DIR, 'wrong_questions.json');
+const DATA_DIR   = getDataDir();
+const WQ_PATH    = path.join(DATA_DIR, 'wrong_questions.json');
+const STATE_PATH = path.join(DATA_DIR, 'feishu_sync_state.json');
 
-// ─── 飞书 API 基础 ────────────────────────────────────────────
+const BLOCK = { TEXT: 2, HEADING2: 4, DIVIDER: 22, IMAGE: 27 };
 
-async function getTenantToken(appId, appSecret) {
-  const res = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ app_id: appId, app_secret: appSecret }),
-  });
-  const data = await res.json();
-  if (data.code !== 0) throw new Error(`获取飞书 Token 失败: ${data.msg}`);
-  return data.tenant_access_token;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ─── 配置 ─────────────────────────────────────────────────────
+
+function loadFeishuConfig() {
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`未找到 ${configPath}。把 assets/config.example.json 复制为 config.json 并填写 feishu_doc 部分。`);
+  }
+  const fd = readJson(configPath, {}).feishu_doc || {};
+  if (!fd.enabled)                    throw new Error('config.json 里 feishu_doc.enabled 不是 true');
+  if (!fd.app_id || !fd.app_secret)   throw new Error('config.json 缺少 feishu_doc.app_id / app_secret');
+  if (!fd.doc_url && !fd.doc_token)   throw new Error('config.json 缺少 feishu_doc.doc_url（粘贴文档链接即可）');
+
+  const base = fd.domain === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn';
+  return { ...fd, base, target: parseDocTarget(fd.doc_url || fd.doc_token) };
 }
 
-/**
- * 上传图片到飞书，返回 file_token。
- * @param {string} imageBase64
- * @param {string} token  tenant_access_token
- */
-async function uploadImage(imageBase64, token) {
-  const imgBuffer = Buffer.from(imageBase64, 'base64');
+/** 从链接或 token 识别出文档类型和 token */
+function parseDocTarget(input) {
+  const s = String(input).trim();
+  let m;
+  if ((m = s.match(/\/docx\/([A-Za-z0-9]+)/))) return { kind: 'docx', token: m[1] };
+  if ((m = s.match(/\/wiki\/([A-Za-z0-9]+)/))) return { kind: 'wiki', token: m[1] };
+  if (/\/docs\/[A-Za-z0-9]+/.test(s)) {
+    throw new Error('这是旧版文档（/docs/ 链接），飞书 API 已不支持写入。请新建一篇新版文档（链接里是 /docx/）再配置。');
+  }
+  if (/^[A-Za-z0-9]+$/.test(s)) return { kind: 'docx', token: s };
+  throw new Error(`无法识别的文档地址：${s}`);
+}
 
-  // 飞书上传接口需要 multipart/form-data
-  const FormData = (await import('node:buffer')).Blob
-    ? globalThis.FormData   // Node 18+
-    : require('form-data'); // 低版本 fallback
+// ─── HTTP ─────────────────────────────────────────────────────
 
+/** 把常见错误翻译成用户能操作的提示 */
+function explain(code, msg, httpStatus) {
+  const text = `${msg || ''}`.toLowerCase();
+  if (code === 99991672 || /scope|permission denied|access denied/.test(text)) {
+    return '应用缺少接口权限：去开放平台开通 docx:document 和 docs:document.media:upload（或 drive:drive），然后「创建版本并发布」。';
+  }
+  if (httpStatus === 403 || /forbidden|no permission|not have permission/.test(text)) {
+    return '应用没有这篇文档的编辑权限：打开文档 → 右上角「…」→「添加文档应用」，把应用加进来并给可编辑。';
+  }
+  if (httpStatus === 404 || /not ?found/.test(text)) {
+    return '找不到文档：检查 doc_url 是否正确，国际版 Lark 需设置 "domain": "lark"。';
+  }
+  if (/app_id|app secret|app_secret|invalid app/.test(text)) {
+    return 'app_id 或 app_secret 不正确。';
+  }
+  return null;
+}
+
+class FeishuClient {
+  constructor({ base, app_id, app_secret }) {
+    Object.assign(this, { base, app_id, app_secret, token: null, lastEdit: 0 });
+  }
+
+  async auth() {
+    const res  = await fetch(`${this.base}/open-apis/auth/v3/tenant_access_token/internal`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body:    JSON.stringify({ app_id: this.app_id, app_secret: this.app_secret }),
+    });
+    const data = await res.json();
+    if (data.code !== 0) {
+      throw new Error(`获取飞书 token 失败: ${data.msg}（${explain(data.code, data.msg, res.status) || '检查 app_id / app_secret'}）`);
+    }
+    this.token = data.tenant_access_token;
+  }
+
+  /**
+   * 统一请求：自动带 token；限流（HTTP 429 / code 99991400）时退避重试。
+   * 文档编辑接口单文档约 3 次/秒，edit=true 的请求之间强制间隔。
+   */
+  async call(method, url, { json, form, edit = false } = {}, attempt = 0) {
+    if (edit) {
+      const wait = this.lastEdit + 400 - Date.now();
+      if (wait > 0) await sleep(wait);
+      this.lastEdit = Date.now();
+    }
+    const headers = { Authorization: `Bearer ${this.token}` };
+    let body;
+    if (json) { headers['Content-Type'] = 'application/json; charset=utf-8'; body = JSON.stringify(json); }
+    if (form) body = form;
+
+    const res = await fetch(`${this.base}${url}`, { method, headers, body });
+    let data;
+    try { data = await res.json(); } catch (_) { data = { code: -1, msg: `HTTP ${res.status}` }; }
+
+    if ((res.status === 429 || data.code === 99991400) && attempt < 4) {
+      await sleep(1000 * 2 ** attempt);
+      return this.call(method, url, { json, form, edit }, attempt + 1);
+    }
+    if (data.code !== 0) {
+      const hint = explain(data.code, data.msg, res.status);
+      const err  = new Error(`${method} ${url.split('?')[0]} 失败: [${data.code}] ${data.msg}${hint ? `\n→ ${hint}` : ''}`);
+      err.code = data.code;
+      throw err;
+    }
+    return data.data;
+  }
+}
+
+// ─── 文档操作 ─────────────────────────────────────────────────
+
+async function resolveDocumentId(client, target) {
+  if (target.kind === 'docx') return target.token;
+  const node = (await client.call('GET', `/open-apis/wiki/v2/spaces/get_node?token=${target.token}`)).node;
+  if (node.obj_type !== 'docx') {
+    throw new Error(`这个知识库节点是 ${node.obj_type}，不是新版文档（docx），无法写入。`);
+  }
+  return node.obj_token;
+}
+
+/** 在文档根节点末尾追加块，返回创建出的块列表（不传 index 即追加到末尾） */
+async function appendBlocks(client, docId, children) {
+  if (!children.length) return [];
+  const out = [];
+  for (let i = 0; i < children.length; i += 50) {            // 单次最多 50 个
+    const data = await client.call(
+      'POST',
+      `/open-apis/docx/v1/documents/${docId}/blocks/${docId}/children?document_revision_id=-1`,
+      { json: { children: children.slice(i, i + 50) }, edit: true },
+    );
+    out.push(...(data.children || []));
+  }
+  return out;
+}
+
+async function insertImage(client, docId, b64) {
+  const img = decodeImage(b64);
+  if (!img) throw new Error('截图数据不是可识别的图片格式');
+
+  // ① 空图片块
+  const [block] = await appendBlocks(client, docId, [{ block_type: BLOCK.IMAGE, image: {} }]);
+  const blockId = block.block_id;
+
+  // ② 上传素材，挂到这个图片块下
   const form = new FormData();
-  form.append('image_type', 'message');
-  form.append('image', new Blob([imgBuffer], { type: 'image/jpeg' }), 'question.jpg');
+  form.append('file_name',   `question.${img.ext}`);
+  form.append('parent_type', 'docx_image');
+  form.append('parent_node', blockId);
+  form.append('size',        String(img.buf.length));
+  form.append('extra',       JSON.stringify({ drive_route_token: docId }));
+  form.append('file',        new Blob([img.buf], { type: img.mime }), `question.${img.ext}`);
+  const up = await client.call('POST', '/open-apis/drive/v1/medias/upload_all', { form });
 
-  const res = await fetch('https://open.feishu.cn/open-apis/im/v1/images', {
-    method:  'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body:    form,
-  });
-  const data = await res.json();
-  if (data.code !== 0) throw new Error(`图片上传失败: ${data.msg}`);
-  return data.data.image_key;
+  // ③ 把素材设置到图片块
+  await client.call(
+    'PATCH',
+    `/open-apis/docx/v1/documents/${docId}/blocks/${blockId}?document_revision_id=-1`,
+    { json: { replace_image: { token: up.file_token } }, edit: true },
+  );
 }
 
-// ─── 文档块构建 ───────────────────────────────────────────────
+// ─── 块构建 ───────────────────────────────────────────────────
 
-/** 构建一道错题对应的飞书文档块列表（文字 + 可选图片）。 */
-function buildQuestionBlocks(q, imageKey) {
-  const statusEmoji = q.status === '已掌握' ? '✅' : '🔲';
-  const blocks = [];
+function textBlock(content, style = {}) {
+  return {
+    block_type: BLOCK.TEXT,
+    text: { elements: [{ text_run: { content, text_element_style: style } }] },
+  };
+}
 
-  // 标题块：科目 + 题型 + 状态
-  blocks.push({
-    block_type: 3,   // heading2
-    heading2: {
-      elements: [{
-        type: 'text_run',
-        text_run: {
-          content: `${statusEmoji} [${q.module}·${q.subtype}] ${q.date}`,
-          text_element_style: { bold: true },
-        },
-      }],
-    },
-  });
+/** 多行文字拆成多个段落块（文本块内不放换行符，避免接口报参数错误） */
+function paragraphs(text, prefix = '', style = {}) {
+  return String(text)
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map((line, i) => textBlock(i === 0 ? `${prefix}${line}` : line, style));
+}
 
-  // 题目内容（如果有）
-  if (q.question_text) {
-    blocks.push({
-      block_type: 2,   // text
-      text: {
-        elements: [{ type: 'text_run', text_run: { content: q.question_text } }],
-        style:    {},
-      },
-    });
-  }
-
-  // 图片块（来自截图）
-  if (imageKey) {
-    blocks.push({
-      block_type: 27,  // image
-      image: { token: imageKey, width: 400 },
-    });
-  }
-
-  // 视觉描述（多模态模型生成的，对图形题有用）
-  if (q.visual_description) {
-    blocks.push({
-      block_type: 2,
-      text: {
-        elements: [{
-          type: 'text_run',
-          text_run: {
-            content: `📐 图形描述：${q.visual_description}`,
-            text_element_style: { italic: true },
-          },
-        }],
-        style: {},
-      },
-    });
-  }
-
-  // 分析 / 知识点
-  const meta = [
-    q.error_reason  && `❌ 原因：${q.error_reason}`,
-    q.answer        && `✔️ 答案：${q.answer}`,
-    q.keywords?.length && `🏷 知识点：${q.keywords.join('、')}`,
-    q.analysis      && `📝 分析：${q.analysis}`,
-  ].filter(Boolean).join('　　');
-
-  if (meta) {
-    blocks.push({
-      block_type: 2,
-      text: {
-        elements: [{ type: 'text_run', text_run: { content: meta } }],
-        style:    {},
-      },
-    });
-  }
-
-  // 分隔线
-  blocks.push({ block_type: 22 });
-
+function headerBlocks(q) {
+  const mark  = q.status === '已掌握' ? '✅' : '🔲';
+  const title = [q.module, q.subtype].filter(Boolean).join('·') || '错题';
+  const blocks = [{
+    block_type: BLOCK.HEADING2,
+    heading2: { elements: [{ text_run: { content: `${mark} [${title}] ${q.date || ''}`.trim() } }] },
+  }];
+  if (q.question_text) blocks.push(...paragraphs(q.question_text));
   return blocks;
 }
 
-// ─── 插入文档块 ───────────────────────────────────────────────
-
-async function appendBlocksToDoc(docToken, blocks, token) {
-  // 先获取文档末尾 block id
-  const docRes = await fetch(
-    `https://open.feishu.cn/open-apis/docx/v1/documents/${docToken}/blocks?page_size=500`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const docData = await docRes.json();
-  if (docData.code !== 0) throw new Error(`获取文档结构失败: ${docData.msg}`);
-
-  const items    = docData.data?.items ?? [];
-  const lastBlock = items[items.length - 1];
-  const parentId  = docData.data?.document?.document_id ?? docToken;
-  const index     = lastBlock ? items.length : 0;
-
-  const insertRes = await fetch(
-    `https://open.feishu.cn/open-apis/docx/v1/documents/${docToken}/blocks/${parentId}/children`,
-    {
-      method:  'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ children: blocks, index }),
-    }
-  );
-  const insertData = await insertRes.json();
-  if (insertData.code !== 0) throw new Error(`插入文档块失败: ${insertData.msg}`);
-  return insertData;
+function detailBlocks(q) {
+  const blocks = [];
+  if (q.visual_description) blocks.push(...paragraphs(q.visual_description, '📐 图形描述：', { italic: true }));
+  const meta = [
+    q.error_reason      && `❌ 原因：${q.error_reason}`,
+    q.answer            && `✔️ 答案：${q.answer}`,
+    q.keywords?.length  && `🏷 知识点：${q.keywords.join('、')}`,
+    (q.analysis || q.user_annotation) && `📝 批注：${q.analysis || q.user_annotation}`,
+  ].filter(Boolean);
+  if (meta.length) blocks.push(textBlock(meta.join('　　')));
+  blocks.push({ block_type: BLOCK.DIVIDER, divider: {} });
+  return blocks;
 }
 
-// ─── 主同步函数 ───────────────────────────────────────────────
+// ─── 主流程 ───────────────────────────────────────────────────
 
-/**
- * 把最新 N 条错题同步到飞书云文档。
- * @param {{ recentOnly?: boolean, limit?: number }} options
- */
-async function syncToFeishuDoc({ recentOnly = true, limit = 10 } = {}) {
-  const configPath = getConfigPath();
-  if (!fs.existsSync(configPath)) {
-    throw new Error('未找到 config.json，请先配置飞书参数（见 assets/config.example.json）');
-  }
-  const config    = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  const fdConfig  = config.feishu_doc;
-  if (!fdConfig?.enabled || !fdConfig.app_id || !fdConfig.app_secret || !fdConfig.doc_token) {
-    throw new Error('飞书云文档未启用或配置不完整，请检查 config.json');
-  }
+async function syncToFeishuDoc({ all = false, limit = 10, resync = false, checkOnly = false } = {}) {
+  const cfg    = loadFeishuConfig();
+  const client = new FeishuClient(cfg);
+  await client.auth();
 
-  const { app_id, app_secret, doc_token } = fdConfig;
+  const docId = await resolveDocumentId(client, cfg.target);
+  const doc   = await client.call('GET', `/open-apis/docx/v1/documents/${docId}`);
+  console.log(`[feishu_doc] 目标文档：${doc.document?.title || docId}`);
 
-  let questions = [];
-  if (fs.existsSync(WQ_PATH)) {
-    questions = JSON.parse(fs.readFileSync(WQ_PATH, 'utf-8'));
+  if (checkOnly) {
+    // 读文档只需要读权限，再试一次写入才能确认"添加文档应用"那一步做了
+    await appendBlocks(client, docId, [textBlock(`朱批录连接测试 ${new Date().toLocaleString()}`)]);
+    console.log('[feishu_doc] 配置检查通过：能读能写。（文档末尾多了一行测试文字，可以删掉）');
+    return { checked: true };
   }
 
-  // 只同步最新 limit 条（避免文档过长）
-  const toSync = recentOnly
-    ? [...questions].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? '')).slice(0, limit)
-    : questions;
+  const questions = readJson(WQ_PATH, []);
+  const state     = readJson(STATE_PATH, {});
+  const synced    = state[docId] || (state[docId] = {});
 
-  if (!toSync.length) {
-    console.log('[feishu_doc] 没有错题需要同步');
-    return;
+  let todo = questions.filter(q => q.id && (resync || !synced[q.id]));
+  // 新的在前选出 limit 条，再按时间正序写入，文档里读起来是从旧到新
+  todo.sort((a, b) => `${b.date}${b.id}`.localeCompare(`${a.date}${a.id}`));
+  if (!all) todo = todo.slice(0, limit);
+  todo.reverse();
+
+  if (!todo.length) {
+    console.log('[feishu_doc] 没有新的错题需要同步');
+    return { synced: 0 };
   }
 
-  const token = await getTenantToken(app_id, app_secret);
-  console.log(`[feishu_doc] 开始同步 ${toSync.length} 道错题...`);
-
-  for (const q of toSync) {
-    let imageKey = null;
+  console.log(`[feishu_doc] 开始同步 ${todo.length} 道错题...`);
+  let ok = 0, imgFailed = 0;
+  for (const q of todo) {
+    await appendBlocks(client, docId, headerBlocks(q));
     if (q.raw_image_b64) {
       try {
-        imageKey = await uploadImage(q.raw_image_b64, token);
+        await insertImage(client, docId, q.raw_image_b64);
       } catch (e) {
-        console.warn(`[feishu_doc] 图片上传失败（${q.date} ${q.module}）:`, e.message);
+        imgFailed++;
+        console.warn(`[feishu_doc] 截图上传失败（${q.date} ${q.module}）：${e.message}`);
+        await appendBlocks(client, docId, [textBlock('（截图上传失败，见本地错题本）', { italic: true })]);
       }
     }
-    const blocks = buildQuestionBlocks(q, imageKey);
-    await appendBlocksToDoc(doc_token, blocks, token);
-    console.log(`[feishu_doc] 已同步: ${q.date} ${q.module} ${q.subtype}`);
+    await appendBlocks(client, docId, detailBlocks(q));
+
+    synced[q.id] = new Date().toISOString();
+    writeJsonAtomic(STATE_PATH, state);       // 每道题写完就记一次，中途失败下次从断点继续
+    ok++;
+    console.log(`[feishu_doc] 已同步 ${ok}/${todo.length}: ${q.date} ${q.module} ${q.subtype || ''}`);
   }
 
-  console.log('[feishu_doc] 同步完成');
+  console.log(`[feishu_doc] 同步完成：${ok} 道${imgFailed ? `，其中 ${imgFailed} 张截图上传失败` : ''}`);
+  return { synced: ok, imgFailed };
 }
 
-// ─── CLI 入口 ─────────────────────────────────────────────────
+// ─── CLI ──────────────────────────────────────────────────────
 
 if (require.main === module) {
-  const recentOnly = !process.argv.includes('--all');
-  const limit      = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1]) || 10;
-  syncToFeishuDoc({ recentOnly, limit }).catch(e => {
-    console.error('[feishu_doc] 同步失败:', e.message);
+  const argv  = process.argv.slice(2);
+  const limit = parseInt(argv.find(a => a.startsWith('--limit='))?.split('=')[1], 10) || 10;
+  syncToFeishuDoc({
+    all:       argv.includes('--all'),
+    resync:    argv.includes('--resync'),
+    checkOnly: argv.includes('--check'),
+    limit,
+  }).catch(e => {
+    console.error(`[feishu_doc] 同步失败: ${e.message}`);
     process.exit(1);
   });
 }
 
-module.exports = { syncToFeishuDoc };
+module.exports = { syncToFeishuDoc, parseDocTarget };

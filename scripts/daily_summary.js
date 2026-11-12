@@ -15,11 +15,12 @@
 const fs = require('fs');
 const path = require('path');
 const { getDataDir } = require('./paths');
+const { todayLocal } = require('./util');
 
 const DATA_DIR = getDataDir();
 
 function buildSummaryMessage() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   const dailyPath = path.join(DATA_DIR, 'daily', `${today}.json`);
   const cachePath = path.join(DATA_DIR, 'stats_cache.json');
 
@@ -39,6 +40,12 @@ function buildSummaryMessage() {
     : {};
 
   const modules = Object.entries(daily.modules || {});
+  const shenlunOnly = modules.length === 1 && daily.modules['申论'];
+  if (shenlunOnly) {
+    return daily.modules['申论'].written
+      ? `今天写了申论 ✍️ 行测没记录，明天记得来一套保持手感。`
+      : `今天申论没写，行测也没记录。明天哪怕只做一个模块也好。`;
+  }
   if (modules.length === 0) {
     return `今天的记录有点简略，有空补充一下各科目错题数吗？`;
   }
@@ -48,12 +55,18 @@ function buildSummaryMessage() {
     .filter(([, v]) => v.wrong != null)
     .sort(([, a], [, b]) => (b.wrong || 0) - (a.wrong || 0));
 
+  if (!sortedMods.length) {
+    return `今天打卡了，但没记下错题数。有空补一句"判断错了几道"这样的，统计会更准。`;
+  }
   const weakestToday = sortedMods[0];
   const streak = cache.streak || 1;
 
-  // 错题分布行
+  // 错题分布行（一天做了多套时标出套数）
   const modLine = sortedMods
-    .map(([mod, v]) => `${mod} ${v.wrong}错`)
+    .map(([mod, v]) => {
+      const n = Array.isArray(v.sets) ? v.sets.length : 1;
+      return n > 1 ? `${mod} ${v.wrong}错（${n}套）` : `${mod} ${v.wrong}错`;
+    })
     .join(' / ');
 
   // 连续打卡
@@ -79,14 +92,15 @@ function buildSuggestion([modName, modData], weakModules) {
     '数量关系': '数量关系是硬伤，明天计时做 10 道工程/行程题，找一找节奏。',
     '资料分析': '资料分析主要看速度，明天练习"先看问题再看材料"的顺序。',
     '言语理解': '言语理解错得多，看看是不是主旨题——这类题有固定解题逻辑。',
-    '申论': '申论今天没写——明天哪怕只做一道归纳概括，保持手感。',
+    '常识判断': '常识错得多，常识靠积累，明天花 20 分钟过一遍时政和高频考点就够。',
   };
 
   return SUGGESTIONS[modName] || `明天重点看一下【${modName}】，把错题过一遍。`;
 }
 
 // 直接运行时，打印消息（宿主 agent / cron 可以捕获 stdout 作为推送内容）
-const msg = buildSummaryMessage();
-console.log(msg);
+if (require.main === module) {
+  console.log(buildSummaryMessage());
+}
 
 module.exports = { buildSummaryMessage };

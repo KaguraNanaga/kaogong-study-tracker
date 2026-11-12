@@ -44,6 +44,13 @@ cron_jobs:
       script: skills/kaogong-study-tracker/scripts/daily_summary.js
       channel: feishu           # 推送到飞书
 
+  - name: "二刷抽题"
+    schedule: "0 20 * * 1,3,5,0"   # 周一三五日 20:00
+    action:
+      type: run_script
+      script: skills/kaogong-study-tracker/scripts/review_reminder.js
+      channel: feishu
+
 # 记忆配置（让 agent 记住用户习惯）
 memory:
   enabled: true

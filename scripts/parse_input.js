@@ -2,18 +2,15 @@
  * parse_input.js
  * 将用户发来的消息（文字 或 图片）解析为结构化的备考数据。
  *
- * 图片识别：统一走宿主 agent 提供的多模态模型。
+ * 图片识别：统一走宿主 agent 提供的多模态模型（agentCall）。
  *   支持图形推理、统计图表等 OCR 无法理解的题型。
- *   未配置时发送 onboarding 提示，引导用户填写 API Key。
- *
- * Windows 兼容：execFile 先尝试 python3，失败则 fallback 到 python（导出用）。
+ *   宿主没有图片能力时，提示用户改发文字。
  */
 
 const fs           = require('fs');
 const path         = require('path');
-const { execFile } = require('child_process');
-const os           = require('os');
 const { handleReviewReply } = require('./review_reminder');
+const { todayLocal, normalizeBase64 } = require('./util');
 
 
 // ─────────────────────────────────────────────
@@ -34,10 +31,10 @@ function normalizeModule(text) {
 }
 
 function extractWrongCount(text) {
+  // 顺序很重要："40题错10" 要取 10，不能取 40
   const patterns = [
-    /错[了了]?\s*(\d+)\s*[道题个]/,
-    /(\d+)\s*[道题个]?\s*[错误不对]/,
-    /(\d+)\s*错/,
+    /错(?:了)?\s*(\d+)/,                       // 错了8道 / 错10
+    /(\d+)\s*[道题个]?\s*(?:错|不对)/,          // 4错 / 3道错了
   ];
   for (const p of patterns) {
     const m = text.match(p);
@@ -46,7 +43,17 @@ function extractWrongCount(text) {
   return null;
 }
 
+/** 总题数："40题错10" / "做了40道错了8道" / "15道题错5" */
+function extractTotalCount(text) {
+  const m = text.match(/(\d+)\s*[道题][题]?[^\d]{0,6}?错/);
+  if (!m) return null;
+  const total = parseInt(m[1], 10);
+  const wrong = extractWrongCount(text);
+  return wrong != null && wrong !== total ? total : null;
+}
+
 function inferErrorReason(text) {
+  if (!text) return '未说明';
   const reasons = MODULE_MAP.error_reason_keywords;
   for (const [reason, keywords] of Object.entries(reasons)) {
     if (keywords.some(k => text.includes(k))) return reason;
@@ -66,38 +73,31 @@ function detectMood(text) {
 // ③ 多模态模型调用（可选，支持图形/图表理解）
 // ─────────────────────────────────────────────
 
-const MULTIMODAL_PROMPT = `
-你是一个公考备考助手，正在分析用户发来的错题截图。
-请从图片中提取以下信息，严格以 JSON 格式返回，不要有任何额外说明。
-
-重要要求：
-- 所有字段必须完整输出，禁止使用省略号（...）截断内容
-- visual_description 对图形推理、统计图题目必须完整描述，不得省略任何细节
-- question_text 对文字题必须包含题干和全部选项的完整文字
-
-{
-  "module": "科目，只能是：言语理解/数量关系/判断推理/资料分析/申论 之一",
-  "subtype": "题型，如：逻辑判断/图形推理/定义判断/类比推理/数学运算/资料分析-增长率/主旨概括 等",
-  "question_text": "【完整输出】文字题：题干+全部选项；图形推理：描述图形规律；统计图：标题+所有数据",
-  "visual_description": "【完整输出，不得截断】图形推理/统计图的详细视觉描述：每个格子/数据点的具体内容、规律分析。纯文字题填 null",
-  "answer": "正确答案字母，图片中若不可见则填 null",
-  "user_annotation": "用户手写批注原文，没有填 null",
-  "error_reason_hint": "知识点不会/粗心/时间不够/概念混淆/无法判断",
-  "keywords": ["知识点标签，最多3个"]
-}
-
-如果图片模糊无法识别，返回：{"error": "图片无法识别"}
-`.trim();
+const MULTIMODAL_PROMPT = fs
+  .readFileSync(path.join(__dirname, '../references/vision_prompt.md'), 'utf-8')
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .trim();
 
 
 // ─────────────────────────────────────────────
 // 图片识别结果 → 统一结构
 // ─────────────────────────────────────────────
 
-function buildConfirmPrompt(module, errorReason, caption) {
-  if (!module)                                    return '这是哪个科目？（言语/数量/判断/资料/申论）';
-  if (errorReason === '未说明' && !caption)       return '这道题是知识点没掌握、粗心，还是时间不够？';
+const REASONS = ['知识点不会', '粗心', '时间不够', '概念混淆'];
+
+function buildConfirmPrompt(module, errorReason) {
+  if (!module || !MODULE_MAP.aliases[module]) return '这是哪个科目？（常识/言语/数量/判断/资料/申论）';
+  if (!REASONS.includes(errorReason))         return '这道题是知识点没掌握、粗心，还是时间不够？';
   return null;
+}
+
+/** 模型经常在 JSON 前后加说明文字或代码块，取第一个 { 到最后一个 } */
+function extractJson(raw) {
+  const s = String(raw || '');
+  const start = s.indexOf('{');
+  const end   = s.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('模型没有返回 JSON');
+  return JSON.parse(s.slice(start, end + 1));
 }
 
 function guessSubtype(text) {
@@ -165,9 +165,12 @@ async function parseImageInput(imageBase64, caption, agentCall) {
     const promptWithCaption = caption
       ? `${MULTIMODAL_PROMPT}\n\n用户附带说明：「${caption}」`
       : MULTIMODAL_PROMPT;
-    const raw    = await agentCall({ image: imageBase64, text: promptWithCaption });
-    const parsed = JSON.parse((raw || '').replace(/```json|```/g, '').trim());
+    const raw    = await agentCall({ image: normalizeBase64(imageBase64), text: promptWithCaption });
+    const parsed = extractJson(raw);
     if (parsed.error) throw new Error(parsed.error);
+    // 用户在 caption 里说了原因，以用户为准；模型的"无法判断"视为未说明，才会触发追问
+    const captionReason = inferErrorReason(caption);
+    const modelReason   = REASONS.includes(parsed.error_reason_hint) ? parsed.error_reason_hint : '未说明';
     engineResult = {
       success:            true,
       source_engine:      'agent-vision',
@@ -177,7 +180,7 @@ async function parseImageInput(imageBase64, caption, agentCall) {
       visual_description: parsed.visual_description  ?? null,
       answer:             parsed.answer              ?? null,
       user_annotation:    parsed.user_annotation     ?? null,
-      error_reason:       parsed.error_reason_hint   ?? '未说明',
+      error_reason:       captionReason !== '未说明' ? captionReason : modelReason,
       keywords:           parsed.keywords            ?? [],
     };
   } catch (e) {
@@ -190,10 +193,11 @@ async function parseImageInput(imageBase64, caption, agentCall) {
 
   return {
     ...engineResult,
-    date:          new Date().toISOString().slice(0, 10),
+    date:          todayLocal(),
     source:        'image',
-    raw_image_b64: await compressImageAsync(imageBase64),  // 压缩到 800px 宽再存
-    needs_confirm: buildConfirmPrompt(engineResult.module, engineResult.error_reason, caption),
+    status:        '待二刷',
+    raw_image_b64: await compressImageAsync(normalizeBase64(imageBase64)),  // 压缩到 1200px 宽再存
+    needs_confirm: buildConfirmPrompt(engineResult.module, engineResult.error_reason),
   };
 }
 
@@ -201,23 +205,6 @@ async function parseImageInput(imageBase64, caption, agentCall) {
 // ─────────────────────────────────────────────
 // 图片压缩（存储前缩至 800px 宽，减少 JSON 体积）
 // ─────────────────────────────────────────────
-
-/**
- * 用 Canvas API（Node 18+ 没有，走 sharp 或直接限制尺寸）。
- * 运行在 Node 环境时，这里用 sharp 如果可用，否则原样返回。
- * 安装：npm install sharp（可选，未安装时跳过压缩）
- */
-function compressImage(base64) {
-  try {
-    const sharp = require('sharp');  // 可选依赖，未安装时 catch
-    const buf   = Buffer.from(base64, 'base64');
-    // sharp 是异步的，这里同步包装（仅在图片很大时才值得）
-    // 实际使用时建议改为 async 版本
-    return base64;  // 占位，下方 compressImageAsync 是真正的异步版本
-  } catch (_) {
-    return base64;  // sharp 未安装，原样返回
-  }
-}
 
 /**
  * 异步版本（推荐在 parseImageInput 中使用）。
@@ -228,7 +215,9 @@ async function compressImageAsync(base64) {
     const sharp  = require('sharp');
     const buf    = Buffer.from(base64, 'base64');
     const out    = await sharp(buf)
-      .resize({ width: 800, withoutEnlargement: true })
+      .flatten({ background: '#ffffff' })                  // 透明区域铺白底，否则转 JPEG 会变黑
+      .rotate()                                            // 按 EXIF 方向摆正手机照片
+      .resize({ width: 1200, withoutEnlargement: true })   // 800 宽时资料分析小字常看不清
       .jpeg({ quality: 80 })
       .toBuffer();
     return out.toString('base64');
@@ -250,11 +239,14 @@ async function compressImageAsync(base64) {
  * @returns {object|null} 解析结果，null 表示不是快捷格式
  */
 function parseQuickEntry(text) {
-  // 快捷格式：至少两段用 - 或 — 分隔，第一段是科目关键词
-  const parts = text.split(/[-—·\/]/);
+  // 快捷格式：至少两段用 - 或 — 分隔，且第一段"只是"科目名。
+  // 不能只看第一段里"含有"科目词，否则"今天判断错了8道/言语4道"会被当成快捷录入，打卡数据丢失。
+  const parts = text.trim().split(/\s*[-—–]\s*/);
   if (parts.length < 2) return null;
 
-  const module = normalizeModule(parts[0].trim());
+  const head = parts[0].trim();
+  if (head.length > 7 || /\d/.test(head)) return null;
+  const module = normalizeModule(head);
   if (!module) return null;
 
   // 第二段：题型（可选）
@@ -275,7 +267,7 @@ function parseQuickEntry(text) {
 
   return {
     source:        'quick',
-    date:          new Date().toISOString().slice(0, 10),
+    date:          todayLocal(),
     module,
     subtype:       subtype || guessSubtype(reasonRaw),
     question_text: text,   // 保留原始快捷文字
@@ -301,7 +293,10 @@ function parseQuickEntry(text) {
  *   "只导出待二刷的资料分析题"
  */
 function parseExportCommand(text) {
-  if (!/导出|错题本|生成报告/.test(text)) return null;
+  // 只认明确的导出意图。原来只要出现"错题本"就算导出，
+  // "错题本里那道图推我看懂了"也会触发导出。
+  const intent = /导出|生成报告|下载.{0,6}错题|(?:把|将).{0,6}错题.{0,4}(?:发|给|传)(?:给)?我|错题本.{0,2}(?:发|给)(?:给)?我/;
+  if (!intent.test(text)) return null;
 
   const pending = /待二刷|未掌握/.test(text);
 
@@ -334,7 +329,7 @@ function parseStudyInput(message) {
   if (quick) return quick;
 
   const result = {
-    date:                new Date().toISOString().slice(0, 10),
+    date:                todayLocal(),
     source:              'text',
     raw_message:         message,
     mood:                detectMood(message),
@@ -342,24 +337,51 @@ function parseStudyInput(message) {
     has_exam:            false,
     skip_today:          false,
     needs_clarification: null,
+    // 更正上一条，而不是又做了一套
+    is_correction:       /说错了|记错了|报错了|更正|改成|改为|应该是/.test(message),
   };
 
-  if (/没做|没时间|跳过|明天补|休息/.test(message)) {
-    result.skip_today = true;
-    return result;
-  }
   if (/做了|做完|刷了|套题|整套|一套/.test(message)) result.has_exam = true;
 
-  for (const sent of message.split(/[，。！？,.\n]/)) {
+  const mentionsWrong = /错|不对/.test(message);
+  for (const sent of message.split(/[，。！？；、\/,.;!?\n]/)) {
     const mod = normalizeModule(sent);
-    if (mod) {
-      result.parsed_modules[mod] = {
-        wrong:        extractWrongCount(sent),
-        total:        null,
-        error_reason: inferErrorReason(sent),
-      };
+    if (!mod) continue;
+
+    if (mod === '申论') {
+      // 申论按"写没写"记录，不按错题数
+      if (/没写|没做|没练|跳过/.test(sent))       result.parsed_modules[mod] = { written: false };
+      else if (/写了|写完|做了|练了|交了/.test(sent)) result.parsed_modules[mod] = { written: true };
+      else continue;   // "申论怎么提分"这类提问不算打卡
       result.has_exam = true;
+      continue;
     }
+
+    let wrong = extractWrongCount(sent);
+    let total = extractTotalCount(sent);
+    // 只补总题数："判断那套一共40道"
+    const totalOnly = sent.match(/(?:一共|总共|共)\s*(\d+)\s*[道题]/);
+    if (wrong == null && totalOnly) total = parseInt(totalOnly[1], 10);
+    // "判断错了8道/言语4道"、"更正：判断是6道"：省略了"错"，整句在说错题数时按错题数理解
+    if (wrong == null && !totalOnly && (mentionsWrong || result.is_correction)) {
+      const nums = sent.match(/\d+/g);
+      if (nums && nums.length === 1) wrong = parseInt(nums[0], 10);
+    }
+    if (wrong == null && total == null && !result.has_exam) continue;   // 只提到科目名、没报数字的问句不记录
+    result.parsed_modules[mod] = {
+      wrong,
+      total,
+      error_reason: inferErrorReason(sent),
+    };
+    result.has_exam = true;
+  }
+
+  // 只有在完全没有做题数据时，才把"没做/休息"理解为今天跳过。
+  // 否则"判断错了8道，申论没做"会把整天记成休息、错题数全丢。
+  if (!Object.keys(result.parsed_modules).length && /没做|没时间|跳过|明天补|休息/.test(message)) {
+    result.skip_today = true;
+    result.has_exam   = false;
+    return result;
   }
 
   if (result.has_exam && !Object.keys(result.parsed_modules).length) {
@@ -398,4 +420,7 @@ async function handleMessage(message, { agentCall, sendMessage } = {}) {
   return parseStudyInput(text);
 }
 
-module.exports = { handleMessage, parseStudyInput, parseImageInput, normalizeModule, detectMood };
+module.exports = {
+  handleMessage, parseStudyInput, parseImageInput, parseExportCommand,
+  normalizeModule, inferErrorReason, detectMood, compressImageAsync, REASONS, MULTIMODAL_PROMPT,
+};
